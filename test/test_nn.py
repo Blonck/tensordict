@@ -1963,6 +1963,33 @@ class TestSkipExisting:
         td = module(TensorDict({"out": torch.zeros(())}, []))
         assert (td["out"] == 1).all()
 
+    def test_selective_keys_with_module(self):
+        class MyModule(TensorDictModuleBase):
+            in_keys = []
+            out_keys = ["out", "ignore_out"]
+
+            @set_skip_existing(None)
+            def forward(self, tensordict):
+                tensordict.set("out", torch.ones(()))
+                tensordict.set("ignore_out", torch.ones(()))
+                return tensordict
+
+        module = MyModule()
+        with set_skip_existing():
+            td = module(TensorDict({"ignore_out": torch.zeros(())}, []))
+        assert (td["out"] == 1).all()
+        assert (td["ignore_out"] == 1).all()
+        with set_skip_existing(["out"]):
+            td = module(TensorDict({"ignore_out": torch.zeros(())}, []))
+        assert (td["out"] == 1).all()
+        assert (td["ignore_out"] == 1).all()
+        with set_skip_existing():
+            td = module(
+                TensorDict({"out": torch.zeros(()), "ignore_out": torch.zeros(())}, [])
+            )
+        assert (td["out"] == 0).all()
+        assert (td["ignore_out"] == 0).all()
+
     def test_module(self):
         class MyModule(TensorDictModuleBase):
             in_keys = []

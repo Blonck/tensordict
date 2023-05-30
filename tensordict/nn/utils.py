@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import functools
 import inspect
-from typing import Any, Callable
+from typing import Any, Callable, List, Optional
 
 import torch
 from torch import nn
@@ -163,6 +163,30 @@ class set_skip_existing(_DecoratorContextManager):
             batch_size=torch.Size([]),
             device=None,
             is_shared=False)
+    
+    When using set_skip_existing as a decorator, specifying which keys to
+    consider can be beneficial in certain scenarios. This helps to selectively
+    ignore certain out_keys when determining whether the method call should be
+    skipped.
+        >>> from tensordict import TensorDict
+        >>> from tensordict.nn import set_skip_existing, skip_existing, TensorDictModuleBase
+        >>> class MyModule(TensorDictModuleBase):
+        ...     in_keys = []
+        ...     out_keys = ["out", "memory"]
+        ...     @set_skip_existing(None)
+        ...     def forward(self, tensordict):
+        ...         print("hello")
+        ...         tensordict.set("out", torch.zeros(()))
+        ...         tensordict.set("memory", torch.zeros(()))
+        ...         return tensordict
+        >>> module = MyModule()
+        >>> _ = module(TensorDict({"out": torch.zeros(())}, []))  # prints "hello"
+        hello
+        >>> with set_skip_existing(True):
+        ...     _ = module(TensorDict({"out": torch.zeros(())}, []))  # no print
+        >>> with set_skip_existing(consider_only=["out]):
+        ...     _ = module(TensorDict({"memory": torch.zeros(())}, []))  # no print
+        hello
 
     Decorating a method with the mode set to ``None`` is useful whenever one
     wants ot let the context manager take care of skipping things from the outside:
@@ -186,7 +210,7 @@ class set_skip_existing(_DecoratorContextManager):
     .. note::
         To allow for modules to have the same input and output keys and not
         mistakenly ignoring subgraphs, ``@set_skip_existing(True)`` will be
-        deactivated whenever the output keys are also the input keys:
+        deactivated whenever at least one output key is also the input keys:
 
             >>> class MyModule(TensorDictModuleBase):
             ...     in_keys = ["out"]
@@ -210,11 +234,16 @@ class set_skip_existing(_DecoratorContextManager):
     """
 
     def __init__(
-        self, mode: bool | None = True, in_key_attr="in_keys", out_key_attr="out_keys"
+        self,
+        mode: bool | None = True,
+        in_key_attr="in_keys",
+        out_key_attr="out_keys",
+        consider_only: Optional[List[str]] = None,
     ):
         self.mode = mode
         self.in_key_attr = in_key_attr
         self.out_key_attr = out_key_attr
+        self.consider_only = consider_only
         self._called = False
 
     def clone(self) -> set_skip_existing:
@@ -223,7 +252,7 @@ class set_skip_existing(_DecoratorContextManager):
         out._called = self._called
         return out
 
-    def __call__(self, func: Callable):
+    def __call__(self, func: Callable) -> Callable:
 
         self._called = True
 
@@ -241,8 +270,15 @@ class set_skip_existing(_DecoratorContextManager):
 
         @functools.wraps(func)
         def wrapper(_self, tensordict, *args: Any, **kwargs: Any) -> Any:
-            in_keys = getattr(_self, self.in_key_attr)
-            out_keys = getattr(_self, self.out_key_attr)
+            if self.consider_only is None:
+                in_key_attr = self.in_key_attr
+                out_key_attr = self.out_key_attr
+            else:
+                in_key_attr = [i for i in self.in_key_attr if i in self.consider_only]
+                out_key_attr = [i for i in self.out_key_attr if i in self.consider_only]
+
+            in_keys = getattr(_self, in_key_attr)
+            out_keys = getattr(_self, out_key_attr)
             # we use skip_existing to allow users to override the mode internally
             if (
                 skip_existing()
